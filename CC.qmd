@@ -1,0 +1,556 @@
+---
+title: "Community Contribution QQPlot and Quantiles"
+output: html_document
+execute:
+  echo: true
+  warning: false
+format:
+  html:
+    fig-width: 7
+    fig-height: 4
+    out-width: 60%
+    embed-resources: true
+editor_options: 
+  chunk_output_type: inline
+---
+
+# 1. Introduction
+
+We start by loading some random data. I've found a package [tidytuesdayR](https://cran.r-project.org/web/packages/tidytuesdayR/index.html), which contains a lot of fun example data, perfect for illustrating certain concepts and playing around with.
+
+Here, we import a dataset that looks at the age difference between two (romantic) leads in a movie. I thought this was a fun dataset, but the choice here is irrelevant.
+
+```{r}
+
+library(tidyverse)
+library(tidytuesdayR)
+library(tidyr)
+
+tuesdata <- tidytuesdayR::tt_load('2023-02-14')
+age_gaps <- tuesdata$age_gaps
+
+```
+
+While playing around with QQPlots, and especially when reproducing them, I realized that there were a few subtleties involved with it:
+
+1.  My naive QQPlot construction did not match with the ones generated using ggplot or qqnorm.
+2.  My straight line does not coincide with the one in ggplot/qqnorm (for reference my naive choice of straight line was running a regression).
+
+```{r}
+
+y = head(age_gaps$age_difference, 5)
+
+# 1. Sort the data
+sorted_data <- sort(y)
+
+# 2. Compute the theoretical quantiles
+n <- length(sorted_data)
+#probabilities <- (1:n - 0.5) / n
+probabilities <- (1:n) / (n+1)
+theoretical_quantiles <- qnorm(probabilities)
+
+qqnorm(y,
+       axes = TRUE, 
+       xlim = c(-1.5,1.5),
+       frame.plot = TRUE, 
+       main = "Normal Q-Q plot", 
+       xlab = "Theoretical Quantiles", 
+       ylab = "Sample Quantiles")
+qqline(y, col = "blue")
+points(theoretical_quantiles, sorted_data, col = "red", pch = 16)
+
+probabilities <- (1:n) / (n+1)
+theoretical_quantiles <- qnorm(probabilities)
+naive <- data.frame(theoretical_quantiles,sorted_data)
+ggplot() +
+  geom_qq(data = head(age_gaps, 5), aes(sample = age_difference), size = 2) +
+  geom_qq_line(data = head(age_gaps, 5), aes(sample = age_difference),color = "blue",line.p = c(.25, .75)) +
+  geom_point(data = naive, aes(x = theoretical_quantiles, y = sorted_data), color = "red", size = 2) +
+  ggtitle("GGPlot version: Q-Q plot with different quantile-points") +
+  theme_minimal()
+
+```
+
+What about the different choices of lines?
+
+```{r,fig.width=8, fig.height=6}
+
+y = head(age_gaps$age_difference, 5)
+
+# Aesthetic color choices
+colors <- c("#D55E00", "#0072B2", "#009E73", "#F0E442", "#CC79A7", "#56B4E9", "#E69F00", "grey80", "#9467bd")
+
+# Start the Q-Q plot
+qqnorm(y, main = "Normal Q-Q plot", xlab = "Theoretical Quantiles", ylab = "Sample Quantiles", col = "black", pch = 16)
+
+# Add the various qq lines for the different types
+for (i in 1:9) {
+  qqline(y, col = colors[i], lwd = 2, qtype = i)
+}
+
+# Add legend
+legend("bottomright", legend = paste("Type", 1:9), fill = colors, cex = 0.7, title = "Quantile Types")
+
+```
+
+**Answer: Quantile function is more intricate:** Quantiles are random variables, and therefore we need to define an estimator for them. There are various ways of estimating the quantile function. In particular there are 9 specific types that are standard and have been proposed in [**Hyndman-Fan**](https://www.amherst.edu/media/view/129116/original/Sample+Quantiles.pdf).
+
+# 2. Choice of Quantile function
+
+We now examine the nine types of quantile functions proposed in [**Hyndman-Fan**](https://www.amherst.edu/media/view/129116/original/Sample+Quantiles.pdf):
+
+```{r,fig.width=10, fig.height=8}
+library(dplyr)
+
+# Generate the data
+data <- c(1,2,3,3.2,4,5)
+probs <- seq(0, 1, 0.001)
+
+# Create a data frame for all types
+df <- data.frame()
+
+for (i in 1:9) {
+  quantiles <- quantile(data, probs=probs, type=i)
+  df_temp <- data.frame(probs, quantiles, type = factor(paste0("Type_", 1:9)[i]))
+  df <- rbind(df, df_temp)
+}
+
+# Create the ggplot
+p <- ggplot(df, aes(x=probs, y=quantiles)) +
+  geom_line() +
+  labs(x="Probabilities", 
+       y="Quantiles", 
+       title="Quantile Plots for Different Types") +
+  theme_minimal() +
+  facet_wrap(~type, scales = "free", ncol = 3) +
+  theme(strip.background = element_rect(fill = "lightblue", colour = "black", linewidth = .25),
+        strip.text = element_text(face = "bold"))
+
+# Display the plot
+print(p)
+
+```
+
+# 3. What are these different sample quantiles?
+
+Traditionally there are 9 quantile estimator types defined in [**Hyndman-Fan**](https://www.amherst.edu/media/view/129116/original/Sample+Quantiles.pdf).
+
+In practice, we want to define sample quantiles (same as other estimators, such as the sample mean, sample median, etc.). They are defined as weighted averages of the order statistics:
+
+$$
+\hat{Q}(p) = (1-\gamma) x_{(j)} + \gamma x_{(j+1)} \,, \qquad \frac{j-m}{n} \leq p < \frac{j-m+1}{n} \,,
+$$
+
+where $x_{(1)} \leq x_{(2)} \leq \cdots \leq x_{(n)}$ is the ordered sample, $m \in \mathbb{R}$ and $\gamma \in [0,1]$. Notice, this function is precisely what we're displaying in the previous plot. This function $\hat{Q}(p)$ should satisfy certain properties in order to be considered a proper quantile estimator, for example it better satisfies $\text{number of } X_k \leq \hat{Q}(p) \geq p n$, etc..
+
+## 3.1. The first three types are locally constant functions.
+
+For example type 1 is the empirical distribution function, where $m=0$ and
+
+$$
+\gamma = \left\{\begin{array}{ll} 1 \,,\quad & pn-j = 0 \,,\\ 0 \,, \quad &pn-j \neq 0\,. \end{array} \right.
+$$
+
+This precisely corresponds to the case, where we jump to the next quantile once we hit a certain data point (in particular this type of quantile function is usually used when generating bootstrap analyses). Namely, the probabilities (inverse of the quantile function) are
+
+$$
+F(x) = Q^{-1}(x) = \sum_{i=1}^n \frac{i}{n+1} 1_{x_{(i)} \leq x < x_{(i+1)}} \,,
+$$ where $1_{A}$ is the indicator function. See the below graph.
+
+```{r}
+filtered_df <- subset(df, type == 'Type_1')
+pts <- data.frame(x = (1:length(data)) / (n+1),y = data)
+ggplot(filtered_df, aes(x=quantiles, y=probs)) +
+  geom_line() +
+  geom_point(data=pts, 
+             aes(x=y, y=x), 
+             color="red", 
+             size=3) +
+  labs(y="Probabilities", 
+       x="Quantiles", 
+       title="Probability plot for Type 1 quantiles") +
+  theme_minimal()
+```
+
+The other two cases are similar except that the jumps are defined slightly differently. In the type 2 case, the probability along the jump is averaged (i.e. in the middle), and therefore its graph is indistinguishable compared to the above one. The third type can be visualized nicely:
+
+```{r}
+filtered_df <- subset(df, type == 'Type_3')
+pts <- data.frame(x = (1:length(data)) / (n+1),y = data)
+ggplot(filtered_df, aes(x=quantiles, y=probs)) +
+  geom_line() +
+  geom_point(data=pts, 
+             aes(x=y, y=x), 
+             color="red", 
+             size=3) +
+  labs(y="Probabilities", 
+       x="Quantiles", 
+       title="Probability plot for Type 3 quantiles") +
+  theme_minimal()
+```
+
+## 3.2. The remaining six types are piecewise continuous functions
+
+```{r, fig.width=14, fig.height=12}
+filtered_df <- subset(df, type %in% paste0('Type_', 4:9))
+
+pts <- data.frame(x = (1:length(data)) / (n+1),y = data)
+pts1 <- data.frame(x = (1:length(data) - 1) / (n+1),y = data)
+
+# Plot with faceting
+ggplot(filtered_df, aes(x=quantiles, y=probs)) +
+  geom_line() +
+  geom_point(data=pts, aes(x=y, y=x, color="i/(n+1)"), size=3) +
+  geom_point(data=pts1, aes(x=y, y=x, color="(i-1)/(n+1)"), size=3) +
+  labs(y="Probabilities", 
+       x="Quantiles", 
+       title="Probability plot for different types of quantiles") +
+  scale_color_manual(name = "probability type",
+                     values = c("i/(n+1)" = "red", "(i-1)/(n+1)" = "blue")) +
+  theme_minimal() +
+  facet_wrap(~type, ncol=2)
+```
+
+# 4. Which one describes the original distribution the best: Simulation study
+
+We now perform a basic simulation study for the 9 types and different underlying distributions. We compare the squared errors of the actual quantiles of the underlying distribution with the one generated using drawn data from the same distribution. Finally we observe the mean and the median. The "best" type is supposed to be the one with the smallest error as it most closely models $E[X_{(i)}]$ (the expected value of the i-th order statistic).
+
+```{r}
+set.seed(42)
+nr_reps = 1000
+res <- matrix(0, nrow = nr_reps, ncol = 9, dimnames = list(NULL, paste0("Type_", 1:9)))
+
+# Loop over repetitions and types
+for(repl in 1:nr_reps) {
+  for (i in 1:9) {
+    data <- rnorm(200)
+    probs <- seq(0.01, 0.99, 0.01)
+    quantiles <- quantile(data, probs=probs, type=i)
+    
+    df_err <- sum((quantiles - qnorm(probs))^2)/length(probs)
+    res[repl, i] <- df_err
+  }
+}
+res_df <- data.frame(res)
+
+column_means <- colMeans(res_df)
+column_medians <- apply(res_df, 2, median)
+
+#print(colMeans(res_df))
+#print(column_medians)
+
+# Create a dataframe for plotting
+plot_df <- data.frame(
+  Case = colnames(res_df),
+  Mean = column_means,
+  Median = column_medians
+)
+
+# Plot using ggplot
+p <- ggplot(plot_df, aes(x = Case)) +
+  geom_point(aes(y = Mean, color = "Mean"), size = 3) +
+  geom_point(aes(y = Median, color = "Median"), size = 3) +
+  geom_line(aes(y = Mean, group = 1, color = "Mean")) +
+  geom_line(aes(y = Median, group = 1, color = "Median")) +
+  labs(y = "Error", color = "Statistic:", title = "Standard Normal distribution: Mean and Median for the 9 types") +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+print(p)
+
+set.seed(42)
+nr_reps = 1000
+res <- matrix(0, nrow = nr_reps, ncol = 9, dimnames = list(NULL, paste0("Type_", 1:9)))
+
+# Loop over repetitions and types
+for(repl in 1:nr_reps) {
+  for (i in 1:9) {
+    data <- rchisq(200,df=5)
+    probs <- seq(0.01, 0.99, 0.01)
+    quantiles <- quantile(data, probs=probs, type=i)
+    df_err <- sum((quantiles - qchisq(probs,df=5))^2)/length(probs)
+    res[repl, i] <- df_err
+  }
+}
+
+res_df <- data.frame(res)
+
+column_means <- colMeans(res_df)
+column_medians <- apply(res_df, 2, median)
+
+#print(colMeans(res_df))
+#print(column_medians)
+
+# Create a dataframe for plotting
+plot_df <- data.frame(
+  Case = colnames(res_df),
+  Mean = column_means,
+  Median = column_medians
+)
+
+# Plot using ggplot
+p <- ggplot(plot_df, aes(x = Case)) +
+  geom_point(aes(y = Mean, color = "Mean"), size = 3) +
+  geom_point(aes(y = Median, color = "Median"), size = 3) +
+  geom_line(aes(y = Mean, group = 1, color = "Mean")) +
+  geom_line(aes(y = Median, group = 1, color = "Median")) +
+  labs(y = "Error", color = "Statistic", title = "Chi-squared distribution: Mean and Median for the 9 types") +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+print(p)
+```
+
+**Remark:** In the case of underlying Normal distribution, it seems like indeed type 9 is preferred. Notice, however, that fiddling with the sample size (and the random seed) a bit, we can get different results, but the general picture (at least for large sample size) seems to be that type 9 consistently places quite high. We could do a more in-depth study here, but we would rather see how it performs on different types of distributions. Especially for non-symmetric distributions, we do not expect type 9 to perform as well.
+
+```{r}
+set.seed(42)
+nr_reps = 1000
+res <- matrix(0, nrow = nr_reps, ncol = 9, dimnames = list(NULL, paste0("Type_", 1:9)))
+
+# Loop over repetitions and types
+for(repl in 1:nr_reps) {
+  for (i in 1:9) {
+    data <- runif(200)
+    probs <- seq(0.01, 0.99, 0.01)
+    quantiles <- quantile(data, probs=probs, type=i)
+    
+    df_err <- sum((quantiles - qunif(probs))^2)/length(probs)
+    res[repl, i] <- df_err
+  }
+}
+
+res_df <- data.frame(res)
+
+column_means <- colMeans(res_df)
+column_medians <- apply(res_df, 2, median)
+
+#print(colMeans(res_df))
+#print(column_medians)
+
+plot_df <- data.frame(
+  Case = colnames(res_df),
+  Mean = column_means,
+  Median = column_medians
+)
+
+p <- ggplot(plot_df, aes(x = Case)) +
+  geom_point(aes(y = Mean, color = "Mean"), size = 3) +
+  geom_point(aes(y = Median, color = "Median"), size = 3) +
+  geom_line(aes(y = Mean, group = 1, color = "Mean")) +
+  geom_line(aes(y = Median, group = 1, color = "Median")) +
+  labs(y = "Error", color = "Statistic", title = "Uniform distribution: Mean and Median for the 9 types") +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+print(p)
+
+```
+
+```{r}
+set.seed(42)
+nr_reps = 1000
+res <- matrix(0, nrow = nr_reps, ncol = 9, dimnames = list(NULL, paste0("Type_", 1:9)))
+
+# Loop over repetitions and types
+for(repl in 1:nr_reps) {
+  for (i in 1:9) {
+    data <- rchisq(200,df=5)
+    probs <- seq(0.01, 0.99, 0.01)
+    quantiles <- quantile(data, probs=probs, type=i)
+    df_err <- sum((quantiles - qchisq(probs,df=5))^2)/length(probs)
+    res[repl, i] <- df_err
+  }
+}
+
+res_df <- data.frame(res)
+
+column_means <- colMeans(res_df)
+column_medians <- apply(res_df, 2, median)
+
+#print(colMeans(res_df))
+#print(column_medians)
+
+# Create a dataframe for plotting
+plot_df <- data.frame(
+  Case = colnames(res_df),
+  Mean = column_means,
+  Median = column_medians
+)
+
+# Plot using ggplot
+p <- ggplot(plot_df, aes(x = Case)) +
+  geom_point(aes(y = Mean, color = "Mean"), size = 3) +
+  geom_point(aes(y = Median, color = "Median"), size = 3) +
+  geom_line(aes(y = Mean, group = 1, color = "Mean")) +
+  geom_line(aes(y = Median, group = 1, color = "Median")) +
+  labs(y = "Error", color = "Statistic", title = "Chi-squared distribution: Mean and Median for the 9 types") +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+print(p)
+
+```
+
+**Remark:** As expected, for non-symmetric distribution, type 9 does not perform so well (and as a matter of fact, it seems like the locally constant versions do much better here). We somewhat cherry-picked sample size and distribution here, but the picture is the same for other choices. This was expected from the results in [**Blom 1958:**](https://gwern.net/doc/statistics/order/1958-blom-orderstatistics.pdf).
+
+# 5. What is type 9 and why is it used?
+
+The default type being used for QQPlots (and a lot of other quantile functions in R such as ppoints) is type 9 (both in base R's qqnorm and ggplot's geom_qq).
+
+Type 9 was introduced first in 1958 in a paper by [**Blom 1958:**](https://gwern.net/doc/statistics/order/1958-blom-orderstatistics.pdf). In this case, the probabilities are chosen via the offset $a=3/8$, i.e.,
+
+$$
+p_k = \frac{k-3/8}{n+1/4} \,.
+$$
+
+Blom argues that for an underlying Normal distribution and based on somewhat general constraints $E[X_{(i)}]$ is best approximated with $a=3/8$ as an offset. Upon reading that paper, the choice is actually pretty ad-hoc based on just a few numerical answers for small sample size (back then it was presumably quite hard to do numerical studies). There are some general arguments (using the essentially the mean value theorem), but they do not very tightly constrain $a$. Nonetheless, that choice of $a=3/8$ has persisted and is nowadays standard in QQPlots and even other quantile estimates (such as ppoints).
+
+Since QQPlots are most often used to compare with Normal distributions, is is sensible to chose whichever quantile estimator works best for it. Nonetheless, if one wants to be careful, one should adjust the quantile estimates for QQPlots where we are not comparing against the normal distribution. For example, a similar strategy as in **Blom 1958** was later used in [Cunnane 1978](https://www.sciencedirect.com/science/article/abs/pii/0022169478900173) for other distributions, where the author identifies different offsets $a$ based on the underlying distribution.
+
+We explicitly investigate which type was used for the various relevant base R and ggplot functions, and our findings (with references) are:
+
+-   [**Ggplot2 qq_geom source code**](https://github.com/tidyverse/ggplot2/blob/5a61e2e656d61469e5ae7e2ffa29fd755d9c1b71/R/stat-qq.R): In line 96, we see that the quantiles in ggplot's QQ-plot are chosen from the ppoints function (whose default type is 9).
+
+-   Description of [**ppoint**](https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/ppoints) function. This is effectively a simplified version of the type selection, by providing an option to change the offset in $\frac{i-a}{n+1-2a}$ (this of course does not allow for specifying locally constant functions such as types 1,2 and 3). We can also explicitly compare:
+
+```{r}
+ppoints(5) - (1:5 - 3/8) / (5+1/4)
+```
+
+-   Description of the base R [**quantile**](https://stat.ethz.ch/R-manual/R-devel/library/stats/html/quantile.html) function and a short description of the types based on the Hyndman-Fan paper. Base R quantile actually uses by default type 7, i.e. $p_k=\frac{k-1}{n-1}$:
+
+```{r}
+head(quantile(data, probs=probs,type=7)-quantile(data, probs=probs),5)
+```
+
+-   Base R [**qqnorm**](https://stat.ethz.ch/R-manual/R-devel/library/stats/html/qqnorm.html) description; for qqline we can pick quantile type as well as the quantiles through which the line is drawn, however, qqnorm uses by default type 9 and -- as far as I know -- we cannot simply change to a different type. QQline also uses by default type 7. This is actually quite confusing in my opinion.
+
+## 5.1 Back to our (now coinciding) original plots
+
+Compare the (now less) naive plots with type 9 quantile choice vs base R/ggplot's versions and we find precise agreement.
+
+A curiosity in the base R case is that by default, the points in the qqplot are drawn using qtype = 9 (red), while the qqline is drawn using qtype = 7 (blue):
+
+```{r}
+
+n <- length(sorted_data)
+probabilities <- (1:n - 3/8) / (n+1/4)
+probabilities1 <- (1:n - 1) / (n-1)
+
+theoretical_quantiles <- qnorm(probabilities)
+theoretical_quantiles1 <- qnorm(probabilities1)
+
+qqnorm(y,
+       axes = TRUE, 
+       xlim = c(-1.5,1.5),
+       frame.plot = TRUE, 
+       main = "Normal Q-Q plot", 
+       xlab = "Theoretical Quantiles", 
+       ylab = "Sample Quantiles",
+       pch=0)
+qqline(y, col = "black")
+qqline(y, col = "red", qtype=9)
+points(theoretical_quantiles, sorted_data, col = "red", pch = 16)
+points(theoretical_quantiles1, sorted_data, col = "blue", pch = 16)
+
+n <- length(sorted_data)
+probabilities <- (1:n - 3/8) / (n+1/4)
+#probabilities <- (1:n - 1/3) / (n+1/3) # other choices are not precisely coinciding
+theoretical_quantiles <- qnorm(probabilities)
+naive <- data.frame(theoretical_quantiles,sorted_data)
+ggplot() +
+  geom_qq(data = head(age_gaps, 5), aes(sample = age_difference), shape = 1, color = "black", size = 2.2, stroke = 1.2) +
+  geom_qq_line(data = head(age_gaps, 5), aes(sample = age_difference),color = "blue",line.p = c(.25, .75)) +
+  geom_point(data = naive, aes(x = theoretical_quantiles, y = sorted_data), color = "red", size = 2) +
+  ggtitle("GGPlot version: Q-Q plot with coinciding quantile-points") +
+  theme_minimal()
+```
+
+# References and some remarks:
+
+-   [**Blom 1958:**](https://gwern.net/doc/statistics/order/1958-blom-orderstatistics.pdf) Original paper discovering the 9th quantile type, i.e., $\frac{i-3/8}{n+1/4}$, and providing arguments about its efficacy (unbiased) for an underlying Normal distribution.
+-   [**Hyndman and Fan, 1996:**](https://www.amherst.edu/media/view/129116/original/Sample+Quantiles.pdf) Original paper outlining the 9 types of quantile estimators used in packages (at the time and still today).
+-   [**Ggplot2 qq_line source code**](https://github.com/tidyverse/ggplot2/blob/HEAD/R/stat-qq-line.R): The QQ-line is effectively generated in lines 78ff and we see that by default it is simply a line through the 25% and 75% sample quantile of the data.
+-   [**Ggplot2 qq_geom source code**](https://github.com/tidyverse/ggplot2/blob/5a61e2e656d61469e5ae7e2ffa29fd755d9c1b71/R/stat-qq.R): In line 96, we see that the quantiles in ggplot's QQ-plot are chosen from the ppoints function (whose default type is 9).
+-   Description of [**ppoint**](https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/ppoints) function. This is effectively a simplified version of the type selection, by providing an option to change the offset in $\frac{i-a}{n+1-2a}$ (this of course does not allow for specifying locally constant functions such as types 1,2 and 3).
+-   Base R [**quantile**](https://stat.ethz.ch/R-manual/R-devel/library/stats/html/quantile.html) functions and a short description of the types based on the Hyndman-Fan paper.
+-   Base R [**qqnorm**](https://stat.ethz.ch/R-manual/R-devel/library/stats/html/qqnorm.html) description; for qqline we can pick type and the quantiles through which the line is drawn, however, qqnorm uses by default type 9 and as far as I know, we cannot change to a different type.
+
+# Appendix A. Different choices of sample quantiles
+
+Here, we briefly detail the different choices of lines we can draw in ggplot geom_qq_line, and clearly show that they're chosen such that they run through the respective (chosen) quantiles. This is confirmed by looking at the [**Ggplot2 qq_line source code**](https://github.com/tidyverse/ggplot2/blob/HEAD/R/stat-qq-line.R).
+
+(A similar plot and inspiration can be found in https://stackoverflow.com/questions/12766253/qqline-connects-the-first-and-third-quartiles-how-do-i-draw-a-line-between-diff)
+
+```{r}
+
+set.seed(101)
+z <- rgamma(1000, shape = 1)
+
+# Calculate quantiles for reference lines
+quantiles <- c(0.25, 0.75)
+newprobs <- c(0.05, 0.95)
+quantile_values <- quantile(z, probs = quantiles)
+newprobs_values <- quantile(z, probs = newprobs)
+theoretical_quantiles <- qnorm(c(quantiles, newprobs))
+
+# Create the Q-Q plot using ggplot
+p <- ggplot(data.frame(sample = z), aes(sample = sample)) +
+  geom_qq() +
+  geom_qq_line(color = "red", size = .7) + # line.p = c(0.25,0.75)
+  geom_qq_line(color = "blue", size = .7, line.p = c(0.05,0.95)) +
+  geom_hline(yintercept = quantile_values, color = "red", linetype = "dashed") +
+  geom_hline(yintercept = newprobs_values, color = "blue", linetype = "dashed") +
+  geom_vline(xintercept = theoretical_quantiles, color = c(rep("red", 2), rep("blue", 2)), linetype = "dashed") +
+  ggtitle("Q-Q Plot for Gamma Distribution") +
+  xlab("Theoretical Quantiles") +
+  ylab("Observed Quantiles") +
+  theme_minimal()
+
+# Display the plot
+print(p)
+
+```
+
+# Appendix B. Angles of QQ-plots
+
+Here, we provide a bit more details about the slope of the QQ-Plots in general.
+
+1.  The slope of the QQPlot vs the standard normal is given in terms of the standard deviation of the distribution, i.e., larger slope = larger standard deviation and vice versa.
+2.  The intercept of the QQ-line is given in terms of the mean of the distribution.
+
+```{r}
+
+set.seed(101)
+w <- rnorm(1000,mean = 1, sd = 5)
+v <- rnorm(1000,mean = 8, sd = 1)
+r <- rnorm(1000,mean = 0, sd = 1)
+
+newprobs <- c(0.1,0.9)
+df <- data.frame(
+  w = w,
+  v = v,
+  r = r
+)
+
+custom_labels <- c(
+  w = "N(1,5^2)",
+  v = "N(8,1)",
+  r = "N(0,1)"
+)
+
+df_long <- gather(df, key = "Variable", value = "Value")
+
+p <- ggplot(df_long, aes(sample = Value)) +
+  geom_qq() +
+  geom_qq_line(color = "red") +
+  facet_wrap(~ Variable, ncol = 3, labeller = as_labeller(custom_labels)) +
+  ggtitle("Q-Q Plots to illustrate slope/intercept dependencies in the QQ-plot") +
+  xlab('Theoretical Quantiles') +
+  ylab('Sample Quantiles') +
+  theme_minimal()
+
+# Display the plot
+print(p)
+```
